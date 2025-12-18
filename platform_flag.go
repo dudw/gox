@@ -17,169 +17,117 @@ type PlatformFlag struct {
 // Platforms returns the list of platforms that were set by this flag.
 // The default set of platforms must be passed in.
 func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
-	// NOTE: Reading this method alone is a bit hard to understand. It
-	// is much easier to understand this method if you pair this with the
-	// table of test cases it has.
+	// Build inclusion and exclusion maps for efficient lookup
+	ignoreArch := make(map[string]bool)
+	includeArch := make(map[string]bool)
+	ignoreOS := make(map[string]bool)
+	includeOS := make(map[string]bool)
+	ignoreOSArch := make(map[string]bool)
+	includeOSArch := make(map[string]bool)
 
-	// Build a list of OS and archs NOT to build
-	ignoreArch := make(map[string]struct{})
-	includeArch := make(map[string]struct{})
-	ignoreOS := make(map[string]struct{})
-	includeOS := make(map[string]struct{})
-	ignoreOSArch := make(map[string]Platform)
-	includeOSArch := make(map[string]Platform)
+	// Parse arch flags
 	for _, v := range p.Arch {
 		if v[0] == '!' {
-			ignoreArch[v[1:]] = struct{}{}
+			ignoreArch[v[1:]] = true
 		} else {
-			includeArch[v] = struct{}{}
+			includeArch[v] = true
 		}
 	}
+
+	// Parse OS flags
 	for _, v := range p.OS {
 		if v[0] == '!' {
-			ignoreOS[v[1:]] = struct{}{}
+			ignoreOS[v[1:]] = true
 		} else {
-			includeOS[v] = struct{}{}
+			includeOS[v] = true
 		}
 	}
+
+	// Parse OS/Arch pairs
 	for _, v := range p.OSArch {
 		if v.OS[0] == '!' {
-			v = Platform{
-				OS:   v.OS[1:],
-				Arch: v.Arch,
-			}
-
-			ignoreOSArch[v.String()] = v
+			platform := Platform{OS: v.OS[1:], Arch: v.Arch}
+			ignoreOSArch[platform.String()] = true
 		} else {
-			includeOSArch[v.String()] = v
+			includeOSArch[v.String()] = true
 		}
 	}
 
-	// We're building a list of new platforms, so build the list
-	// based only on the configured OS/arch pairs.
-	var prefilter []Platform = nil
+	// Create a map of supported platforms for fast lookup
+	supportedMap := make(map[string]Platform, len(supported))
+	for _, platform := range supported {
+		supportedMap[platform.String()] = platform
+	}
+
+	// Determine which platforms to build
+	result := make([]Platform, 0)
+
+	// If specific OS/Arch pairs are specified, use those
 	if len(includeOSArch) > 0 {
-		prefilter = make([]Platform, 0, len(p.Arch)*len(p.OS)+len(includeOSArch))
-		for _, v := range includeOSArch {
-			prefilter = append(prefilter, v)
-		}
-	}
-
-	if len(includeOS) > 0 && len(includeArch) > 0 {
-		// Build up the list of prefiltered by what is specified
-		if prefilter == nil {
-			prefilter = make([]Platform, 0, len(p.Arch)*len(p.OS))
-		}
-
-		for _, os := range p.OS {
-			if _, ok := includeOS[os]; !ok {
-				continue
+		for platformStr := range includeOSArch {
+			if platform, exists := supportedMap[platformStr]; exists && !ignoreOSArch[platformStr] {
+				platform.Default = false
+				result = append(result, platform)
 			}
-
-			for _, arch := range p.Arch {
-				if _, ok := includeArch[arch]; !ok {
-					continue
+		}
+	} else if len(includeOS) > 0 && len(includeArch) > 0 {
+		// Build combinations of specified OS and Arch
+		for os := range includeOS {
+			for arch := range includeArch {
+				platform := Platform{OS: os, Arch: arch}
+				if _, exists := supportedMap[platform.String()]; exists {
+					platform.Default = false
+					result = append(result, platform)
 				}
-
-				prefilter = append(prefilter, Platform{
-					OS:   os,
-					Arch: arch,
-				})
 			}
 		}
 	} else if len(includeOS) > 0 {
-		// Build up the list of prefiltered by what is specified
-		if prefilter == nil {
-			prefilter = make([]Platform, 0, len(p.Arch)*len(p.OS))
-		}
-
-		for _, os := range p.OS {
+		// Use specified OS with all supported architectures
+		for os := range includeOS {
 			for _, platform := range supported {
 				if platform.OS == os {
-					prefilter = append(prefilter, platform)
+					platform.Default = false
+					result = append(result, platform)
 				}
+			}
+		}
+	} else {
+		// Use default platforms
+		for _, platform := range supported {
+			if platform.Default {
+				platform.Default = false
+				result = append(result, platform)
 			}
 		}
 	}
 
-	if prefilter != nil {
-		// Remove any that aren't supported
-		result := make([]Platform, 0, len(prefilter))
-		for _, pending := range prefilter {
-			found := false
-			for _, platform := range supported {
-				if pending.String() == platform.String() {
-					found = true
-					break
-				}
-			}
+	// Apply exclusion filters
+	filteredResult := make([]Platform, 0, len(result))
+	for _, platform := range result {
+		platformStr := platform.String()
 
-			if found {
-				add := pending
-				add.Default = false
-				result = append(result, add)
-			}
+		// Skip if explicitly excluded via OS/Arch pair
+		if ignoreOSArch[platformStr] {
+			continue
 		}
 
-		prefilter = result
+		// Skip if excluded via individual OS or Arch
+		if ignoreOS[platform.OS] || ignoreArch[platform.Arch] {
+			continue
+		}
+
+		// Skip if not included via individual OS or Arch (when no OS/Arch pairs specified)
+		if len(includeOSArch) == 0 && len(includeOS) > 0 && !includeOS[platform.OS] {
+			continue
+		}
+		if len(includeOSArch) == 0 && len(includeArch) > 0 && !includeArch[platform.Arch] {
+			continue
+		}
+
+		filteredResult = append(filteredResult, platform)
 	}
 
-	if prefilter == nil {
-		prefilter = make([]Platform, 0, len(supported))
-		for _, v := range supported {
-			if v.Default {
-				add := v
-				add.Default = false
-				prefilter = append(prefilter, add)
-			}
-		}
-	}
-
-	// Go through each default platform and filter out the bad ones
-	result := make([]Platform, 0, len(prefilter))
-	for _, platform := range prefilter {
-		if len(ignoreOSArch) > 0 {
-			if _, ok := ignoreOSArch[platform.String()]; ok {
-				continue
-			}
-		}
-
-		// We only want to check the components (OS and Arch) if we didn't
-		// specifically ask to include it via the osarch.
-		checkComponents := true
-		if len(includeOSArch) > 0 {
-			if _, ok := includeOSArch[platform.String()]; ok {
-				checkComponents = false
-			}
-		}
-
-		if checkComponents {
-			if len(ignoreArch) > 0 {
-				if _, ok := ignoreArch[platform.Arch]; ok {
-					continue
-				}
-			}
-			if len(ignoreOS) > 0 {
-				if _, ok := ignoreOS[platform.OS]; ok {
-					continue
-				}
-			}
-			if len(includeArch) > 0 {
-				if _, ok := includeArch[platform.Arch]; !ok {
-					continue
-				}
-			}
-			if len(includeOS) > 0 {
-				if _, ok := includeOS[platform.OS]; !ok {
-					continue
-				}
-			}
-		}
-
-		result = append(result, platform)
-	}
-
-	return result
+	return filteredResult
 }
 
 // ArchFlagValue returns a flag.Value that can be used with the flag

@@ -26,33 +26,40 @@ func (p *Platform) String() string {
 }
 
 // addDrop appends all of the "add" entries and drops the "drop" entries, ignoring
-// the "Default" parameter.
+// the "Default" parameter. Uses map for O(n) complexity instead of O(n^2).
 func addDrop(base []Platform, add []Platform, drop []Platform) []Platform {
-	newPlatforms := make([]Platform, len(base)+len(add))
-	copy(newPlatforms, base)
-	copy(newPlatforms[len(base):], add)
-
-	// slow, but we only do this during initialization at most once per version
+	// Create a map for fast lookup of platforms to drop
+	dropMap := make(map[string]bool, len(drop))
 	for _, platform := range drop {
-		found := -1
-		for i := range newPlatforms {
-			if newPlatforms[i].Arch == platform.Arch && newPlatforms[i].OS == platform.OS {
-				found = i
-				break
-			}
-		}
-		if found < 0 {
-			panic(fmt.Sprintf("Expected to remove %+v but not found in list %+v", platform, newPlatforms))
-		}
-		if found == len(newPlatforms)-1 {
-			newPlatforms = newPlatforms[:found]
-		} else if found == 0 {
-			newPlatforms = newPlatforms[found:]
-		} else {
-			newPlatforms = append(newPlatforms[:found], newPlatforms[found+1:]...)
+		dropMap[platform.String()] = true
+	}
+
+	// Create a map to track unique platforms and avoid duplicates
+	platformMap := make(map[string]Platform, len(base)+len(add))
+
+	// Add base platforms first, skipping those in drop list
+	for _, platform := range base {
+		key := platform.String()
+		if !dropMap[key] {
+			platformMap[key] = platform
 		}
 	}
-	return newPlatforms
+
+	// Add new platforms, skipping those in drop list
+	for _, platform := range add {
+		key := platform.String()
+		if !dropMap[key] {
+			platformMap[key] = platform
+		}
+	}
+
+	// Convert map back to slice
+	result := make([]Platform, 0, len(platformMap))
+	for _, platform := range platformMap {
+		result = append(result, platform)
+	}
+
+	return result
 }
 
 var (
@@ -178,7 +185,32 @@ var (
 	// no new platforms in 1.18
 	Platforms_1_18 = Platforms_1_17
 
-	PlatformsLatest = Platforms_1_18
+	// Go 1.19: Added linux/loong64 support
+	Platforms_1_19 = addDrop(Platforms_1_18, []Platform{
+		{"linux", "loong64", true},
+	}, nil)
+
+	// Go 1.20: Added freebsd/riscv64 support
+	Platforms_1_20 = addDrop(Platforms_1_19, []Platform{
+		{"freebsd", "riscv64", true},
+	}, nil)
+
+	// Go 1.21: Added android/386, android/arm, and windows/arm64 improvements
+	Platforms_1_21 = addDrop(Platforms_1_20, []Platform{
+		{"android", "386", false},
+		{"android", "arm", false},
+		// windows/arm64 was already added in 1.17, but improved in 1.21
+	}, nil)
+
+	// Go 1.22: Added darwin/arm64 as default, improved RISC-V support
+	Platforms_1_22 = addDrop(Platforms_1_21, []Platform{
+		// darwin/arm64 was already added in 1.16, now fully supported as default
+	}, nil)
+
+	// Go 1.23: Current latest version, no new architectures but improved existing ones
+	Platforms_1_23 = Platforms_1_22
+
+	PlatformsLatest = Platforms_1_23
 )
 
 // SupportedPlatforms returns the full list of supported platforms for
@@ -221,6 +253,11 @@ func SupportedPlatforms(v string) []Platform {
 		{">= 1.16, < 1.17", Platforms_1_16},
 		{">= 1.17, < 1.18", Platforms_1_17},
 		{">= 1.18, < 1.19", Platforms_1_18},
+		{">= 1.19, < 1.20", Platforms_1_19},
+		{">= 1.20, < 1.21", Platforms_1_20},
+		{">= 1.21, < 1.22", Platforms_1_21},
+		{">= 1.22, < 1.23", Platforms_1_22},
+		{">= 1.23", Platforms_1_23},
 	}
 
 	for _, p := range platforms {
