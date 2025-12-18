@@ -12,6 +12,9 @@ import (
 	version "github.com/hashicorp/go-version"
 )
 
+// Version is the version of gox
+const Version = "1.3.0"
+
 func main() {
 	// Call realMain so that defers work properly, since os.Exit won't
 	// call defers.
@@ -19,6 +22,12 @@ func main() {
 }
 
 func realMain() int {
+	// Check if the first argument is "version"
+	if len(os.Args) >= 2 && os.Args[1] == "version" {
+		fmt.Println("gox " + Version)
+		return 0
+	}
+
 	var buildToolchain bool
 	var ldflags string
 	var outputTpl string
@@ -205,6 +214,9 @@ const helpText = `Usage: gox [options] [packages]
 
   If no specific operating systems or architectures are specified, Gox
   will build for all pairs supported by your version of Go.
+  
+  If 'version' is specified as the first argument, Gox will print
+  the version of gox.
 
 Options:
 
