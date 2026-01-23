@@ -1,4 +1,4 @@
-package main
+package platform
 
 import (
 	"reflect"
@@ -63,11 +63,6 @@ func TestSupportedPlatforms(t *testing.T) {
 		t.Fatalf("bad: %#v", ps)
 	}
 
-	ps = SupportedPlatforms("go1.10")
-	if !reflect.DeepEqual(ps, Platforms_1_10) {
-		t.Fatalf("bad: %#v", ps)
-	}
-
 	ps = SupportedPlatforms("go1.11")
 	if !reflect.DeepEqual(ps, Platforms_1_11) {
 		t.Fatalf("bad: %#v", ps)
@@ -108,10 +103,6 @@ func TestSupportedPlatforms(t *testing.T) {
 		t.Fatalf("bad: %#v", ps)
 	}
 
-	ps = SupportedPlatforms("go1.10")
-	if !reflect.DeepEqual(ps, Platforms_1_10) {
-		t.Fatalf("bad: %#v", ps)
-	}
 	// Unknown
 	ps = SupportedPlatforms("foo")
 	if !reflect.DeepEqual(ps, PlatformsLatest) {

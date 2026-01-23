@@ -1,4 +1,4 @@
-package main
+package platform
 
 import (
 	"flag"
@@ -6,18 +6,15 @@ import (
 	"strings"
 )
 
-// PlatformFlag is a flag.Value (and flag.Getter) implementation that
-// is used to track the os/arch flags on the command-line.
+// PlatformFlag 用于跟踪命令行的 os/arch 标志
 type PlatformFlag struct {
 	OS     []string
 	Arch   []string
 	OSArch []Platform
 }
 
-// Platforms returns the list of platforms that were set by this flag.
-// The default set of platforms must be passed in.
+// Platforms 返回由此标志设置的平台列表
 func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
-	// Build inclusion and exclusion maps for efficient lookup
 	ignoreArch := make(map[string]bool)
 	includeArch := make(map[string]bool)
 	ignoreOS := make(map[string]bool)
@@ -25,7 +22,6 @@ func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
 	ignoreOSArch := make(map[string]bool)
 	includeOSArch := make(map[string]bool)
 
-	// Parse arch flags
 	for _, v := range p.Arch {
 		if v[0] == '!' {
 			ignoreArch[v[1:]] = true
@@ -34,7 +30,6 @@ func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
 		}
 	}
 
-	// Parse OS flags
 	for _, v := range p.OS {
 		if v[0] == '!' {
 			ignoreOS[v[1:]] = true
@@ -43,7 +38,6 @@ func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
 		}
 	}
 
-	// Parse OS/Arch pairs
 	for _, v := range p.OSArch {
 		if v.OS[0] == '!' {
 			platform := Platform{OS: v.OS[1:], Arch: v.Arch}
@@ -53,74 +47,78 @@ func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
 		}
 	}
 
-	// Create a map of supported platforms for fast lookup
 	supportedMap := make(map[string]Platform, len(supported))
 	for _, platform := range supported {
 		supportedMap[platform.String()] = platform
 	}
 
-	// Determine which platforms to build
 	result := make([]Platform, 0)
+	added := make(map[string]bool)
 
-	// If specific OS/Arch pairs are specified, use those
-	if len(includeOSArch) > 0 {
-		for platformStr := range includeOSArch {
-			if platform, exists := supportedMap[platformStr]; exists && !ignoreOSArch[platformStr] {
+	// 首先添加 OSArch 中明确包含的平台（按 p.OSArch 顺序）
+	for _, v := range p.OSArch {
+		if v.OS[0] == '!' {
+			continue
+		}
+		platformStr := v.String()
+		if platform, exists := supportedMap[platformStr]; exists {
+			if !added[platformStr] {
 				platform.Default = false
 				result = append(result, platform)
-			}
-		}
-	} else if len(includeOS) > 0 && len(includeArch) > 0 {
-		// Build combinations of specified OS and Arch
-		for os := range includeOS {
-			for arch := range includeArch {
-				platform := Platform{OS: os, Arch: arch}
-				if _, exists := supportedMap[platform.String()]; exists {
-					platform.Default = false
-					result = append(result, platform)
-				}
-			}
-		}
-	} else if len(includeOS) > 0 {
-		// Use specified OS with all supported architectures
-		for os := range includeOS {
-			for _, platform := range supported {
-				if platform.OS == os {
-					platform.Default = false
-					result = append(result, platform)
-				}
-			}
-		}
-	} else {
-		// Use default platforms
-		for _, platform := range supported {
-			if platform.Default {
-				platform.Default = false
-				result = append(result, platform)
+				added[platformStr] = true
 			}
 		}
 	}
 
-	// Apply exclusion filters
+	// 然后处理 OS 和 Arch 的组合
+	if len(includeOS) > 0 && len(includeArch) > 0 {
+		for _, platform := range supported {
+			if includeOS[platform.OS] && includeArch[platform.Arch] {
+				platformStr := platform.String()
+				if !added[platformStr] {
+					platform.Default = false
+					result = append(result, platform)
+					added[platformStr] = true
+				}
+			}
+		}
+	} else if len(includeOS) > 0 && len(includeOSArch) == 0 {
+		for _, platform := range supported {
+			if includeOS[platform.OS] {
+				platformStr := platform.String()
+				if !added[platformStr] {
+					platform.Default = false
+					result = append(result, platform)
+					added[platformStr] = true
+				}
+			}
+		}
+	} else if len(includeOSArch) == 0 {
+		// 没有指定任何内容时使用默认平台
+		for _, platform := range supported {
+			if platform.Default {
+				platformStr := platform.String()
+				if !added[platformStr] {
+					platform.Default = false
+					result = append(result, platform)
+					added[platformStr] = true
+				}
+			}
+		}
+	}
+
+	// 应用排除规则
 	filteredResult := make([]Platform, 0, len(result))
 	for _, platform := range result {
 		platformStr := platform.String()
 
-		// Skip if explicitly excluded via OS/Arch pair
+		// 排除 OSArch 中明确忽略的
 		if ignoreOSArch[platformStr] {
 			continue
 		}
 
-		// Skip if excluded via individual OS or Arch
+		// 排除 OS 或 Arch 被忽略的
 		if ignoreOS[platform.OS] || ignoreArch[platform.Arch] {
-			continue
-		}
-
-		// Skip if not included via individual OS or Arch (when no OS/Arch pairs specified)
-		if len(includeOSArch) == 0 && len(includeOS) > 0 && !includeOS[platform.OS] {
-			continue
-		}
-		if len(includeOSArch) == 0 && len(includeArch) > 0 && !includeArch[platform.Arch] {
 			continue
 		}
 
@@ -130,27 +128,22 @@ func (p *PlatformFlag) Platforms(supported []Platform) []Platform {
 	return filteredResult
 }
 
-// ArchFlagValue returns a flag.Value that can be used with the flag
-// package to collect the arches for the flag.
+// ArchFlagValue 返回用于收集 arch 标志的 flag.Value
 func (p *PlatformFlag) ArchFlagValue() flag.Value {
 	return (*appendStringValue)(&p.Arch)
 }
 
-// OSFlagValue returns a flag.Value that can be used with the flag
-// package to collect the operating systems for the flag.
+// OSFlagValue 返回用于收集 os 标志的 flag.Value
 func (p *PlatformFlag) OSFlagValue() flag.Value {
 	return (*appendStringValue)(&p.OS)
 }
 
-// OSArchFlagValue returns a flag.Value that can be used with the flag
-// package to collect complete os and arch pairs for the flag.
+// OSArchFlagValue 返回用于收集 os/arch 对的 flag.Value
 func (p *PlatformFlag) OSArchFlagValue() flag.Value {
 	return (*appendPlatformValue)(&p.OSArch)
 }
 
-// appendPlatformValue is a flag.Value that appends a full platform (os/arch)
-// to a list where the values from space-separated lines. This is used to
-// satisfy the -osarch flag.
+// appendPlatformValue 是用于追加完整平台 (os/arch) 的 flag.Value
 type appendPlatformValue []Platform
 
 func (s *appendPlatformValue) String() string {
@@ -190,9 +183,7 @@ func (s *appendPlatformValue) appendIfMissing(value *Platform) {
 	*s = append(*s, *value)
 }
 
-// appendStringValue is a flag.Value that appends values to the list,
-// where the values come from space-separated lines. This is used to
-// satisfy the -os="windows linux" flag to become []string{"windows", "linux"}
+// appendStringValue 用于追加空格分隔的值
 type appendStringValue []string
 
 func (s *appendStringValue) String() string {

@@ -1,4 +1,5 @@
-package main
+// Package toolchain 提供 Go 工具链构建功能
+package toolchain
 
 import (
 	"bytes"
@@ -10,19 +11,20 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/mitchellh/iochan"
+	"github.com/dudw/gox/internal/builder"
+	"github.com/dudw/gox/internal/iochan"
+	"github.com/dudw/gox/internal/platform"
 )
 
-// The "main" method for when the toolchain build is requested.
-func mainBuildToolchain(parallel int, platformFlag PlatformFlag, verbose bool) int {
+// MainBuildToolchain 构建工具链的主函数
+func MainBuildToolchain(parallel int, platformFlag platform.PlatformFlag, verbose bool) int {
 	if _, err := exec.LookPath("go"); err != nil {
 		fmt.Fprintf(os.Stderr, "You must have Go already built for your native platform\n")
 		fmt.Fprintf(os.Stderr, "and the `go` binary on the PATH to build toolchains.\n")
 		return 1
 	}
 
-	// If we're version 1.5 or greater, then we don't need to do this anymore!
-	versionParts, err := GoVersionParts()
+	versionParts, err := builder.GoVersionParts()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading Go version: %s", err)
 		return 1
@@ -35,13 +37,13 @@ func mainBuildToolchain(parallel int, platformFlag PlatformFlag, verbose bool) i
 		return 1
 	}
 
-	version, err := GoVersion()
+	version, err := builder.GoVersion()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading Go version: %s", err)
 		return 1
 	}
 
-	root, err := GoRoot()
+	root, err := builder.GoRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error finding GOROOT: %s\n", err)
 		return 1
@@ -52,10 +54,8 @@ func mainBuildToolchain(parallel int, platformFlag PlatformFlag, verbose bool) i
 		fmt.Println("outputted to stdout as they are built.\n ")
 	}
 
-	// Determine the platforms we're building the toolchain for.
-	platforms := platformFlag.Platforms(SupportedPlatforms(version))
+	platforms := platformFlag.Platforms(platform.SupportedPlatforms(version))
 
-	// The toolchain build can't be parallelized.
 	if parallel > 1 {
 		fmt.Println("The toolchain build can't be parallelized because compiling a single")
 		fmt.Println("Go source directory can only be done for one platform at a time. Therefore,")
@@ -67,16 +67,16 @@ func mainBuildToolchain(parallel int, platformFlag PlatformFlag, verbose bool) i
 	var wg sync.WaitGroup
 	errs := make([]error, 0)
 	semaphore := make(chan int, parallel)
-	for _, platform := range platforms {
+	for _, p := range platforms {
 		wg.Add(1)
-		go func(platform Platform) {
-			err := buildToolchain(&wg, semaphore, root, platform, verbose)
+		go func(p platform.Platform) {
+			err := buildToolchain(&wg, semaphore, root, p, verbose)
 			if err != nil {
 				errorLock.Lock()
 				defer errorLock.Unlock()
-				errs = append(errs, fmt.Errorf("%s: %s", platform.String(), err))
+				errs = append(errs, fmt.Errorf("%s: %s", p.String(), err))
 			}
-		}(platform)
+		}(p)
 	}
 	wg.Wait()
 
@@ -91,11 +91,11 @@ func mainBuildToolchain(parallel int, platformFlag PlatformFlag, verbose bool) i
 	return 0
 }
 
-func buildToolchain(wg *sync.WaitGroup, semaphore chan int, root string, platform Platform, verbose bool) error {
+func buildToolchain(wg *sync.WaitGroup, semaphore chan int, root string, p platform.Platform, verbose bool) error {
 	defer wg.Done()
 	semaphore <- 1
 	defer func() { <-semaphore }()
-	fmt.Printf("--> Toolchain: %s\n", platform.String())
+	fmt.Printf("--> Toolchain: %s\n", p.String())
 
 	scriptName := "make.bash"
 	if runtime.GOOS == "windows" {
@@ -109,24 +109,21 @@ func buildToolchain(wg *sync.WaitGroup, semaphore chan int, root string, platfor
 	cmd := exec.Command(scriptPath, "--no-clean")
 	cmd.Dir = scriptDir
 	cmd.Env = append(os.Environ(),
-		"GOARCH="+platform.Arch,
-		"GOOS="+platform.OS)
+		"GOARCH="+p.Arch,
+		"GOOS="+p.OS)
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stdout
 
 	if verbose {
-		// In verbose mode, we output all stdout to the console.
 		r, w := io.Pipe()
 		cmd.Stdout = w
 		cmd.Stderr = io.MultiWriter(cmd.Stderr, w)
 
-		// Send all the output to stdout, and also make a done channel
-		// so that this compilation isn't done until we receive all output
 		doneCh := make(chan struct{})
 		go func() {
 			defer close(doneCh)
 			for line := range iochan.DelimReader(r, '\n') {
-				fmt.Printf("%s: %s", platform.String(), line)
+				fmt.Printf("%s: %s", p.String(), line)
 			}
 		}()
 		defer func() {
@@ -136,12 +133,12 @@ func buildToolchain(wg *sync.WaitGroup, semaphore chan int, root string, platfor
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("Error building '%s': %s", platform.String(), err)
+		return fmt.Errorf("Error building '%s': %s", p.String(), err)
 	}
 
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("Error building '%s'.\n\nStdout: %s\n\nStderr: %s\n",
-			platform.String(), stdout.String(), stderr.String())
+			p.String(), stdout.String(), stderr.String())
 	}
 
 	return nil

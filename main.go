@@ -1,3 +1,4 @@
+// gox 是一个并行交叉编译 Go 应用的工具
 package main
 
 import (
@@ -9,34 +10,35 @@ import (
 	"strings"
 	"sync"
 
-	version "github.com/hashicorp/go-version"
+	version "github.com/dudw/gox/internal/version"
+
+	"github.com/dudw/gox/internal/builder"
+	"github.com/dudw/gox/internal/platform"
+	"github.com/dudw/gox/internal/toolchain"
 )
 
-// Version is the version of gox
-const Version = "1.3.0"
+// Version 是 gox 的版本号
+const Version = "1.4.0"
 
 func main() {
-	// Call realMain so that defers work properly, since os.Exit won't
-	// call defers.
 	os.Exit(realMain())
 }
 
 func realMain() int {
-	// Check if the first argument is "version"
 	if len(os.Args) >= 2 && os.Args[1] == "version" {
 		fmt.Println("gox " + Version)
 		return 0
 	}
 
-	var buildToolchain bool
+	var buildToolchainFlag bool
 	var ldflags string
 	var outputTpl string
 	var parallel int
-	var platformFlag PlatformFlag
+	var platformFlag platform.PlatformFlag
 	var tags string
 	var verbose bool
 	var flagGcflags, flagAsmflags string
-	var flagCgo, flagRebuild, flagListOSArch, flagRaceFlag bool
+	var flagCgo, flagRebuild, flagListOSArch, flagRaceFlag, flagTrimpath bool
 	var flagGoCmd string
 	var modMode string
 	flags := flag.NewFlagSet("gox", flag.ExitOnError)
@@ -48,12 +50,13 @@ func realMain() int {
 	flags.StringVar(&tags, "tags", "", "go build tags")
 	flags.StringVar(&outputTpl, "output", "{{.Dir}}_{{.OS}}_{{.Arch}}", "output path")
 	flags.IntVar(&parallel, "parallel", -1, "parallelization factor")
-	flags.BoolVar(&buildToolchain, "build-toolchain", false, "build toolchain")
+	flags.BoolVar(&buildToolchainFlag, "build-toolchain", false, "build toolchain")
 	flags.BoolVar(&verbose, "verbose", false, "verbose")
 	flags.BoolVar(&flagCgo, "cgo", false, "")
 	flags.BoolVar(&flagRebuild, "rebuild", false, "")
 	flags.BoolVar(&flagListOSArch, "osarch-list", false, "")
 	flags.BoolVar(&flagRaceFlag, "race", false, "")
+	flags.BoolVar(&flagTrimpath, "trimpath", false, "")
 	flags.StringVar(&flagGcflags, "gcflags", "", "")
 	flags.StringVar(&flagAsmflags, "asmflags", "", "")
 	flags.StringVar(&flagGoCmd, "gocmd", "go", "")
@@ -63,8 +66,6 @@ func realMain() int {
 		return 1
 	}
 
-	// Determine what amount of parallelism we want Default to the current
-	// number of CPUs-1 is <= 0 is specified.
 	if parallel <= 0 {
 		cpus := runtime.NumCPU()
 		if cpus < 2 {
@@ -73,17 +74,13 @@ func realMain() int {
 			parallel = cpus - 1
 		}
 
-		// Joyent containers report 48 cores via runtime.NumCPU(), and a
-		// default of 47 parallel builds causes a panic. Default to 3 on
-		// Solaris-derived operating systems unless overridden with the
-		// -parallel flag.
 		if runtime.GOOS == "solaris" {
 			parallel = 3
 		}
 	}
 
-	if buildToolchain {
-		return mainBuildToolchain(parallel, platformFlag, verbose)
+	if buildToolchainFlag {
+		return toolchain.MainBuildToolchain(parallel, platformFlag, verbose)
 	}
 
 	if _, err := exec.LookPath(flagGoCmd); err != nil {
@@ -92,7 +89,7 @@ func realMain() int {
 		return 1
 	}
 
-	versionStr, err := GoVersion()
+	versionStr, err := builder.GoVersion()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading Go version: %s", err)
 		return 1
@@ -102,22 +99,18 @@ func realMain() int {
 		return mainListOSArch(versionStr)
 	}
 
-	// Determine the packages that we want to compile. Default to the
-	// current directory if none are specified.
 	packages := flags.Args()
 	if len(packages) == 0 {
 		packages = []string{"."}
 	}
 
-	// Get the packages that are in the given paths
-	mainDirs, err := GoMainDirs(packages, flagGoCmd)
+	mainDirs, err := builder.GoMainDirs(packages, flagGoCmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading packages: %s", err)
 		return 1
 	}
 
-	// Determine the platforms we're building for
-	platforms := platformFlag.Platforms(SupportedPlatforms(versionStr))
+	platforms := platformFlag.Platforms(platform.SupportedPlatforms(versionStr))
 	if len(platforms) == 0 {
 		fmt.Println("No valid platforms to build for. If you specified a value")
 		fmt.Println("for the 'os', 'arch', or 'osarch' flags, make sure you're")
@@ -125,9 +118,7 @@ func realMain() int {
 		return 1
 	}
 
-	// Assume -mod is supported when no version prefix is found
 	if modMode != "" && strings.HasPrefix(versionStr, "go") {
-		// go-version only cares about version numbers
 		current, err := version.NewVersion(versionStr[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Unable to parse current go version: %s\n%s", versionStr, err.Error())
@@ -145,24 +136,22 @@ func realMain() int {
 		}
 	}
 
-	// Build in parallel!
 	fmt.Printf("Number of parallel builds: %d\n\n", parallel)
 	var errorLock sync.Mutex
 	var wg sync.WaitGroup
 	errors := make([]string, 0)
 	semaphore := make(chan int, parallel)
-	for _, platform := range platforms {
+	for _, p := range platforms {
 		for _, path := range mainDirs {
-			// Start the goroutine that will do the actual build
 			wg.Add(1)
-			go func(path string, platform Platform) {
+			go func(path string, p platform.Platform) {
 				defer wg.Done()
 				semaphore <- 1
-				fmt.Printf("--> %15s: %s\n", platform.String(), path)
+				fmt.Printf("--> %15s: %s\n", p.String(), path)
 
-				opts := &CompileOpts{
+				opts := &builder.CompileOpts{
 					PackagePath: path,
-					Platform:    platform,
+					Platform:    p,
 					OutputTpl:   outputTpl,
 					Ldflags:     ldflags,
 					Gcflags:     flagGcflags,
@@ -173,22 +162,21 @@ func realMain() int {
 					Rebuild:     flagRebuild,
 					GoCmd:       flagGoCmd,
 					Race:        flagRaceFlag,
+					Trimpath:    flagTrimpath,
 				}
 
-				// Determine if we have specific CFLAGS or LDFLAGS for this
-				// GOOS/GOARCH combo and override the defaults if so.
-				envOverride(&opts.Ldflags, platform, "LDFLAGS")
-				envOverride(&opts.Gcflags, platform, "GCFLAGS")
-				envOverride(&opts.Asmflags, platform, "ASMFLAGS")
+				builder.EnvOverride(&opts.Ldflags, p, "LDFLAGS")
+				builder.EnvOverride(&opts.Gcflags, p, "GCFLAGS")
+				builder.EnvOverride(&opts.Asmflags, p, "ASMFLAGS")
 
-				if err := GoCrossCompile(opts); err != nil {
+				if err := builder.GoCrossCompile(opts); err != nil {
 					errorLock.Lock()
 					defer errorLock.Unlock()
 					errors = append(errors,
-						fmt.Sprintf("%s error: %s", platform.String(), err))
+						fmt.Sprintf("%s error: %s", p.String(), err))
 				}
 				<-semaphore
-			}(path, platform)
+			}(path, p)
 		}
 	}
 	wg.Wait()
@@ -199,6 +187,20 @@ func realMain() int {
 			fmt.Fprintf(os.Stderr, "--> %s\n", err)
 		}
 		return 1
+	}
+
+	return 0
+}
+
+func mainListOSArch(versionStr string) int {
+	fmt.Printf(
+		"Supported OS/Arch combinations for %s are shown below. The \"default\"\n"+
+			"boolean means that if you don't specify an OS/Arch, it will be\n"+
+			"included by default. If it isn't a default OS/Arch, you must explicitly\n"+
+			"specify that OS/Arch combo for Gox to use it.\n\n",
+		versionStr)
+	for _, p := range platform.SupportedPlatforms(versionStr) {
+		fmt.Printf("%s\t(default: %v)\n", p.String(), p.Default)
 	}
 
 	return 0
@@ -234,6 +236,7 @@ Options:
   -output="foo"       Output path template. See below for more info
   -parallel=-1        Amount of parallelism, defaults to number of CPUs
   -race               Build with the go race detector enabled, requires CGO
+  -trimpath           Remove all file system paths from the resulting executable
   -gocmd="go"         Build command, defaults to Go
   -rebuild            Force rebuilding of package that were up to date
   -verbose            Verbose mode

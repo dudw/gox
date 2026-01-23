@@ -1,23 +1,21 @@
-package main
+// Package platform 提供跨平台编译的平台定义和支持检测
+package platform
 
 import (
 	"fmt"
 	"log"
 	"strings"
 
-	version "github.com/hashicorp/go-version"
+	version "github.com/dudw/gox/internal/version"
 )
 
-// Platform is a combination of OS/arch that can be built against.
+// Platform 表示一个 OS/Arch 组合的编译目标
 type Platform struct {
 	OS   string
 	Arch string
 
-	// Default, if true, will be included as a default build target
-	// if no OS/arch is specified. We try to only set as a default popular
-	// targets or targets that are generally useful. For example, Android
-	// is not a default because it is quite rare that you're cross-compiling
-	// something to Android AND something like Linux.
+	// Default 为 true 时表示该平台是默认构建目标
+	// 仅流行或通用平台会设为默认目标
 	Default bool
 }
 
@@ -25,19 +23,16 @@ func (p *Platform) String() string {
 	return fmt.Sprintf("%s/%s", p.OS, p.Arch)
 }
 
-// addDrop appends all of the "add" entries and drops the "drop" entries, ignoring
-// the "Default" parameter. Uses map for O(n) complexity instead of O(n^2).
+// addDrop 添加 add 中的平台并移除 drop 中的平台
+// 使用 map 实现 O(n) 复杂度
 func addDrop(base []Platform, add []Platform, drop []Platform) []Platform {
-	// Create a map for fast lookup of platforms to drop
 	dropMap := make(map[string]bool, len(drop))
 	for _, platform := range drop {
 		dropMap[platform.String()] = true
 	}
 
-	// Create a map to track unique platforms and avoid duplicates
 	platformMap := make(map[string]Platform, len(base)+len(add))
 
-	// Add base platforms first, skipping those in drop list
 	for _, platform := range base {
 		key := platform.String()
 		if !dropMap[key] {
@@ -45,7 +40,6 @@ func addDrop(base []Platform, add []Platform, drop []Platform) []Platform {
 		}
 	}
 
-	// Add new platforms, skipping those in drop list
 	for _, platform := range add {
 		key := platform.String()
 		if !dropMap[key] {
@@ -53,7 +47,6 @@ func addDrop(base []Platform, add []Platform, drop []Platform) []Platform {
 		}
 	}
 
-	// Convert map back to slice
 	result := make([]Platform, 0, len(platformMap))
 	for _, platform := range platformMap {
 		result = append(result, platform)
@@ -117,10 +110,8 @@ var (
 	}, nil)
 
 	Platforms_1_7 = addDrop(Platforms_1_5, []Platform{
-		// While not fully supported s390x is generally useful
 		{"linux", "s390x", true},
 		{"plan9", "arm", false},
-		// Add the 1.6 Platforms, but reflect full support for mips64 and mips64le
 		{"android", "386", false},
 		{"android", "amd64", false},
 		{"linux", "mips64", true},
@@ -134,10 +125,8 @@ var (
 		{"linux", "mipsle", true},
 	}, nil)
 
-	// no new platforms in 1.9
 	Platforms_1_9 = Platforms_1_8
 
-	// unannounced, but dropped support for android/amd64
 	Platforms_1_10 = addDrop(Platforms_1_9, nil, []Platform{{"android", "amd64", false}})
 
 	Platforms_1_11 = addDrop(Platforms_1_10, []Platform{
@@ -159,7 +148,6 @@ var (
 		{"freebsd", "arm64", true},
 		{"linux", "riscv64", true},
 	}, []Platform{
-		// drop nacl
 		{"nacl", "386", false},
 		{"nacl", "amd64", false},
 		{"nacl", "arm", false},
@@ -168,7 +156,6 @@ var (
 	Platforms_1_15 = addDrop(Platforms_1_14, []Platform{
 		{"android", "arm64", false},
 	}, []Platform{
-		// drop i386 macos
 		{"darwin", "386", false},
 	})
 
@@ -182,52 +169,42 @@ var (
 		{"windows", "arm64", true},
 	}, nil)
 
-	// no new platforms in 1.18
 	Platforms_1_18 = Platforms_1_17
 
-	// Go 1.19: Added linux/loong64 support
 	Platforms_1_19 = addDrop(Platforms_1_18, []Platform{
 		{"linux", "loong64", true},
 	}, nil)
 
-	// Go 1.20: Added freebsd/riscv64 support
 	Platforms_1_20 = addDrop(Platforms_1_19, []Platform{
 		{"freebsd", "riscv64", true},
 	}, nil)
 
-	// Go 1.21: Added android/386, android/arm, and windows/arm64 improvements
 	Platforms_1_21 = addDrop(Platforms_1_20, []Platform{
 		{"android", "386", false},
 		{"android", "arm", false},
-		// windows/arm64 was already added in 1.17, but improved in 1.21
 	}, nil)
 
-	// Go 1.22: Added darwin/arm64 as default, improved RISC-V support
-	Platforms_1_22 = addDrop(Platforms_1_21, []Platform{
-		// darwin/arm64 was already added in 1.16, now fully supported as default
-	}, nil)
+	Platforms_1_22 = addDrop(Platforms_1_21, []Platform{}, nil)
 
-	// Go 1.23: Current latest version, no new architectures but improved existing ones
 	Platforms_1_23 = Platforms_1_22
 
-	PlatformsLatest = Platforms_1_23
+	Platforms_1_24 = Platforms_1_23
+
+	Platforms_1_25 = Platforms_1_24
+
+	PlatformsLatest = Platforms_1_25
 )
 
-// SupportedPlatforms returns the full list of supported platforms for
-// the version of Go that is
+// SupportedPlatforms 根据 Go 版本返回支持的平台列表
 func SupportedPlatforms(v string) []Platform {
-	// Use latest if we get an unexpected version string
 	if !strings.HasPrefix(v, "go") {
 		return PlatformsLatest
 	}
-	// go-version only cares about version numbers
 	v = v[2:]
 
 	current, err := version.NewVersion(v)
 	if err != nil {
 		log.Printf("Unable to parse current go version: %s\n%s", v, err.Error())
-
-		// Default to latest
 		return PlatformsLatest
 	}
 
@@ -257,7 +234,9 @@ func SupportedPlatforms(v string) []Platform {
 		{">= 1.20, < 1.21", Platforms_1_20},
 		{">= 1.21, < 1.22", Platforms_1_21},
 		{">= 1.22, < 1.23", Platforms_1_22},
-		{">= 1.23", Platforms_1_23},
+		{">= 1.23, < 1.24", Platforms_1_23},
+		{">= 1.24, < 1.25", Platforms_1_24},
+		{">= 1.25", Platforms_1_25},
 	}
 
 	for _, p := range platforms {
@@ -270,6 +249,5 @@ func SupportedPlatforms(v string) []Platform {
 		}
 	}
 
-	// Assume latest
 	return PlatformsLatest
 }

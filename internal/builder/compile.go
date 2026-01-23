@@ -1,4 +1,5 @@
-package main
+// Package builder 提供 Go 交叉编译功能
+package builder
 
 import (
 	"bytes"
@@ -11,17 +12,21 @@ import (
 	"runtime"
 	"strings"
 	"text/template"
+
+	"github.com/dudw/gox/internal/platform"
 )
 
+// OutputTemplateData 用于输出路径模板的数据
 type OutputTemplateData struct {
 	Dir  string
 	OS   string
 	Arch string
 }
 
+// CompileOpts 编译选项
 type CompileOpts struct {
 	PackagePath string
-	Platform    Platform
+	Platform    platform.Platform
 	OutputTpl   string
 	Ldflags     string
 	Gcflags     string
@@ -32,22 +37,20 @@ type CompileOpts struct {
 	Rebuild     bool
 	GoCmd       string
 	Race        bool
+	Trimpath    bool
 }
 
-// GoCrossCompile
+// GoCrossCompile 执行交叉编译
 func GoCrossCompile(opts *CompileOpts) error {
 	env := append(os.Environ(),
 		"GOOS="+opts.Platform.OS,
 		"GOARCH="+opts.Platform.Arch)
 
-	// If we're building for our own platform, then enable cgo always. We
-	// respect the CGO_ENABLED flag if that is explicitly set on the platform.
 	if !opts.Cgo && os.Getenv("CGO_ENABLED") != "0" {
 		opts.Cgo = runtime.GOOS == opts.Platform.OS &&
 			runtime.GOARCH == opts.Platform.Arch
 	}
 
-	// If cgo is enabled then set that env var
 	if opts.Cgo {
 		env = append(env, "CGO_ENABLED=1")
 	} else {
@@ -72,28 +75,15 @@ func GoCrossCompile(opts *CompileOpts) error {
 		outputPath.WriteString(".exe")
 	}
 
-	// Determine the full path to the output so that we can change our
-	// working directory when executing go build.
 	outputPathReal := outputPath.String()
 	outputPathReal, err = filepath.Abs(outputPathReal)
 	if err != nil {
 		return err
 	}
 
-	// Go prefixes the import directory with '_' when it is outside
-	// the GOPATH.For this, we just drop it since we move to that
-	// directory to build.
 	chdir := ""
 	if opts.PackagePath[0] == '_' {
 		if runtime.GOOS == "windows" {
-			// We have to replace weird paths like this:
-			//
-			//   _/c_/Users
-			//
-			// With:
-			//
-			//   c:\Users
-			//
 			re := regexp.MustCompile("^/([a-zA-Z])_/")
 			chdir = re.ReplaceAllString(opts.PackagePath[1:], "$1:\\")
 			chdir = strings.Replace(chdir, "/", "\\", -1)
@@ -114,6 +104,9 @@ func GoCrossCompile(opts *CompileOpts) error {
 	if opts.Race {
 		args = append(args, "-race")
 	}
+	if opts.Trimpath {
+		args = append(args, "-trimpath")
+	}
 	args = append(args,
 		"-gcflags", opts.Gcflags,
 		"-ldflags", opts.Ldflags,
@@ -126,9 +119,7 @@ func GoCrossCompile(opts *CompileOpts) error {
 	return err
 }
 
-// GoMainDirs returns the file paths to the packages that are "main"
-// packages, from the list of packages given. The list of packages can
-// include relative paths, the special "..." Go keyword, etc.
+// GoMainDirs 返回 main 包的路径列表
 func GoMainDirs(packages []string, GoCmd string) ([]string, error) {
 	args := make([]string, 0, len(packages)+3)
 	args = append(args, "list", "-f", "{{.Name}}|{{.ImportPath}}")
@@ -159,7 +150,7 @@ func GoMainDirs(packages []string, GoCmd string) ([]string, error) {
 	return results, nil
 }
 
-// GoRoot returns the GOROOT value for the compiled `go` binary.
+// GoRoot 返回 GOROOT 路径
 func GoRoot() (string, error) {
 	output, err := execGo("go", nil, "", "env", "GOROOT")
 	if err != nil {
@@ -169,32 +160,23 @@ func GoRoot() (string, error) {
 	return strings.TrimSpace(output), nil
 }
 
-// GoVersion reads the version of `go` that is on the PATH. This is done
-// instead of `runtime.Version()` because it is possible to run gox against
-// another Go version.
+// GoVersion 读取 PATH 上 go 二进制的版本
 func GoVersion() (string, error) {
-	// NOTE: We use `go run` instead of `go version` because the output
-	// of `go version` might change whereas the source is guaranteed to run
-	// for some time thanks to Go's compatibility guarantee.
-
 	td, err := os.MkdirTemp("", "gox")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(td)
 
-	// Write the source code for the program that will generate the version
 	sourcePath := filepath.Join(td, "version.go")
 	if err := os.WriteFile(sourcePath, []byte(versionSource), 0644); err != nil {
 		return "", err
 	}
 
-	// Execute and read the version, which will be the only thing on stdout.
 	return execGo("go", nil, "", "run", sourcePath)
 }
 
-// GoVersionParts parses the version numbers from the version itself
-// into major and minor: 1.5, 1.4, etc.
+// GoVersionParts 解析版本号为 major 和 minor
 func GoVersionParts() (result [2]int, err error) {
 	version, err := GoVersion()
 	if err != nil {
